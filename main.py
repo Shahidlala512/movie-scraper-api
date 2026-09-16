@@ -28,25 +28,23 @@ def get_scraper():
 def home():
     return {"status": "Multi-Source Movie Scraper API Ready"}
 
-# --- Universal Scraper Logic (Works for all WP Movie Sites) ---
+# --- Clean Scraper Logic (Filters out Logos, Apps & Banners) ---
 def scrape_site(scraper, base_url, query):
     encoded_query = quote_plus(query)
     target_url = f"{base_url}/?s={encoded_query}"
     movies = []
     try:
         resp = scraper.get(target_url, timeout=8)
-        print(f"Scraping URL: {target_url} | Status: {resp.status_code}")
         if resp.status_code == 200:
             soup = BeautifulSoup(resp.text, 'html.parser')
             
-            # Universal approach: Find all anchor tags containing an image
             for a_tag in soup.find_all('a', href=True):
                 img_tag = a_tag.find('img')
                 if img_tag:
                     href = a_tag['href']
                     
-                    # Ignore unwanted links
-                    if any(x in href for x in ['/category/', '/tag/', '/page/', 'wp-login', 'whatsapp', 'telegram', 'facebook', 'instagram']):
+                    # Ignore unwanted system/category links
+                    if any(x in href for x in ['/category/', '/tag/', '/page/', 'wp-login', 'whatsapp', 'telegram', 'facebook', 'instagram', '#']):
                         continue
                         
                     poster = img_tag.get('src') or img_tag.get('data-src') or img_tag.get('data-lazy-src')
@@ -62,6 +60,16 @@ def scrape_site(scraper, base_url, query):
                             if title_elem:
                                 title = title_elem.get_text(strip=True)
                                 
+                    if title:
+                        clean_t_lower = title.lower()
+                        # Strict filtering to remove logos, apps, and promotional banners
+                        unwanted_keywords = [
+                            'logo', 'app', 'android', 'apk', 'telegram', 'whatsapp', 
+                            'channel', 'join', 'advertisement', 'banner', 'dmca', 'contact'
+                        ]
+                        if any(k in clean_t_lower for k in unwanted_keywords):
+                            continue
+                    
                     if href and poster and title:
                         if not href.startswith('http'):
                             href = f"{base_url}{href}"
@@ -82,15 +90,12 @@ def search_movies(query: str = "Hindi"):
     scraper = get_scraper()
     all_movies = []
     
-    # Source 1: MoviesMint
     mint_results = scrape_site(scraper, "https://moviesmint.app", query)
     all_movies.extend(mint_results)
     
-    # Source 2: HDHub4u
     hdhub_results = scrape_site(scraper, "https://new5.hdhub4u.cl", query)
     all_movies.extend(hdhub_results)
     
-    # Remove duplicates based on title and clean URL
     seen_titles = set()
     unique_movies = []
     for m in all_movies:
@@ -144,6 +149,7 @@ def resolve_final_url(scraper, url):
             break
     return current_url
 
+# --- Clean Download Links Route (Prevents Mixing Related Posts) ---
 @app.get("/api/links")
 def get_download_links(detailUrl: str):
     scraper = get_scraper()
@@ -154,14 +160,17 @@ def get_download_links(detailUrl: str):
             
         soup = BeautifulSoup(resp.text, 'html.parser')
         
-        for element in soup.find_all(['header', 'footer', 'aside', 'nav', 'form', 'comment']):
-            element.decompose()
+        # Remove entire sections that contain unrelated or sidebar links
+        for junk in soup.find_all(['header', 'footer', 'aside', 'nav', 'form', 'comment']):
+            junk.decompose()
             
-        for junk_div in soup.find_all('div', class_=re.compile(r'sidebar|related|recommended|widgets|popular|social|share|comments')):
+        for junk_div in soup.find_all('div', class_=re.compile(r'sidebar|related|recommended|widgets|popular|social|share|comments|recent')):
             junk_div.decompose()
             
         final_links = []
-        content_area = soup.find(['div', 'article'], class_=re.compile(r'post-content|entry-content|content|su-spoiler'))
+        
+        # Focus strictly on the main post content area
+        content_area = soup.find(['div', 'article'], class_=re.compile(r'post-content|entry-content|content|su-spoiler|post_content'))
         search_scope = content_area if content_area else soup
         
         all_a_tags = search_scope.find_all('a', href=True)
@@ -170,10 +179,10 @@ def get_download_links(detailUrl: str):
             href = tag['href'].strip()
             text = tag.get_text(strip=True).lower()
             
-            valid_keywords = ['480p', '720p', '1080p', '4k', 'gdrive', 'batch', 'zip', 'dual audio', 'episode']
+            valid_keywords = ['480p', '720p', '1080p', '4k', 'gdrive', 'batch', 'zip', 'dual audio', 'episode', 'download']
             is_valid_download = any(k in text for k in valid_keywords) or any(k in href.lower() for k in ['/goto/', 'gdflix', 'filepress', 'drive', 'hubcloud'])
             
-            if not is_valid_download or len(text) < 3:
+            if not is_valid_download or len(text) < 2:
                 continue
                 
             if href.startswith('/'):
@@ -202,6 +211,7 @@ def get_download_links(detailUrl: str):
             })
                 
         seen = set()
+    
         unique_links = []
         for l in final_links:
             if l['url'] not in seen:
@@ -211,3 +221,4 @@ def get_download_links(detailUrl: str):
         return {"success": True, "links": unique_links}
     except Exception as e:
         return {"success": False, "error": str(e)}
+    
