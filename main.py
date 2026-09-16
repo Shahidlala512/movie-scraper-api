@@ -28,7 +28,7 @@ def get_scraper():
 def home():
     return {"status": "Multi-Source Movie Scraper API Ready"}
 
-# --- Clean Scraper Logic (Filters out Logos, Apps & Banners) ---
+# --- Clean Scraper Logic ---
 def scrape_site(scraper, base_url, query):
     encoded_query = quote_plus(query)
     target_url = f"{base_url}/?s={encoded_query}"
@@ -43,7 +43,6 @@ def scrape_site(scraper, base_url, query):
                 if img_tag:
                     href = a_tag['href']
                     
-                    # Ignore unwanted system/category links
                     if any(x in href for x in ['/category/', '/tag/', '/page/', 'wp-login', 'whatsapp', 'telegram', 'facebook', 'instagram', '#']):
                         continue
                         
@@ -62,7 +61,6 @@ def scrape_site(scraper, base_url, query):
                                 
                     if title:
                         clean_t_lower = title.lower()
-                        # Strict filtering to remove logos, apps, and promotional banners
                         unwanted_keywords = [
                             'logo', 'app', 'android', 'apk', 'telegram', 'whatsapp', 
                             'channel', 'join', 'advertisement', 'banner', 'dmca', 'contact'
@@ -149,18 +147,17 @@ def resolve_final_url(scraper, url):
             break
     return current_url
 
-# --- Clean Download Links Route (Prevents Mixing Related Posts) ---
+# --- Ultra-Clean Download Links Route (Filters out generic/useless buttons) ---
 @app.get("/api/links")
 def get_download_links(detailUrl: str):
     scraper = get_scraper()
     try:
-        resp = scraper.get(detailUrl)
+        resp = scraper.get(detailUrl, timeout=8)
         if resp.status_code != 200:
             return {"success": False, "error": "Could not fetch details"}
             
         soup = BeautifulSoup(resp.text, 'html.parser')
         
-        # Remove entire sections that contain unrelated or sidebar links
         for junk in soup.find_all(['header', 'footer', 'aside', 'nav', 'form', 'comment']):
             junk.decompose()
             
@@ -168,8 +165,6 @@ def get_download_links(detailUrl: str):
             junk_div.decompose()
             
         final_links = []
-        
-        # Focus strictly on the main post content area
         content_area = soup.find(['div', 'article'], class_=re.compile(r'post-content|entry-content|content|su-spoiler|post_content'))
         search_scope = content_area if content_area else soup
         
@@ -177,12 +172,28 @@ def get_download_links(detailUrl: str):
         
         for tag in all_a_tags:
             href = tag['href'].strip()
-            text = tag.get_text(strip=True).lower()
+            text = tag.get_text(strip=True)
+            text_lower = text.lower()
             
-            valid_keywords = ['480p', '720p', '1080p', '4k', 'gdrive', 'batch', 'zip', 'dual audio', 'episode', 'download']
-            is_valid_download = any(k in text for k in valid_keywords) or any(k in href.lower() for k in ['/goto/', 'gdflix', 'filepress', 'drive', 'hubcloud'])
-            
-            if not is_valid_download or len(text) < 2:
+            # Skip social/unwanted links
+            if any(bad in text_lower for bad in ['telegram', 'whatsapp', 'subscribe', 'join', 'home', 'request']):
+                continue
+                
+            # Extract specific qualities
+            qualities = []
+            if '480p' in text_lower or '480p' in href.lower():
+                qualities.append('480p')
+            if '720p' in text_lower or '720p' in href.lower():
+                qualities.append('720p')
+            if '1080p' in text_lower or '1080p' in href.lower():
+                qualities.append('1080p')
+            if '4k' in text_lower or '2160p' in text_lower or '4k' in href.lower():
+                qualities.append('4K')
+            if 'batch' in text_lower or 'zip' in text_lower or 'pack' in text_lower:
+                qualities.append('Batch/Zip')
+                
+            # Ignore generic buttons that don't specify quality or proper redirect servers
+            if not qualities and not any(k in href.lower() for k in ['/goto/', 'gdflix', 'filepress', 'hubcloud', 'drive']):
                 continue
                 
             if href.startswith('/'):
@@ -191,34 +202,24 @@ def get_download_links(detailUrl: str):
                 
             resolved_url = resolve_final_url(scraper, href)
             
-            upper_text = tag.get_text(strip=True)
-            label = upper_text if upper_text else "Download Link"
-            
-            if "480p" in text:
-                label = "⚡ Download 480p [Fast Link]"
-            elif "720p" in text:
-                label = "⚡ Download 720p [Fast Link]"
-            elif "1080p" in text:
-                label = "⚡ Download 1080p [Fast Link]"
-            elif "4k" in text:
-                label = "⚡ Download 4K [Fast Link]"
-            elif "episode" in text:
-                label = f"📺 {upper_text}"
+            quality_str = " / ".join(qualities) if qualities else "Fast Link"
+            label = f"⚡ Download [{quality_str}]"
+            if text and len(text) < 40 and not text_lower.startswith('download links') and not text_lower.startswith('dual audio'):
+                label = f"⚡ {text}"
                 
             final_links.append({
                 "name": label,
                 "url": resolved_url
             })
                 
-        seen = set()
-    
+        seen_urls = set()
         unique_links = []
         for l in final_links:
-            if l['url'] not in seen:
-                seen.add(l['url'])
+            if l['url'] not in seen_urls:
+                seen_urls.add(l['url'])
                 unique_links.append(l)
                 
         return {"success": True, "links": unique_links}
     except Exception as e:
         return {"success": False, "error": str(e)}
-    
+        
