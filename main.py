@@ -211,4 +211,3 @@ def get_download_links(detailUrl: str):
         return {"success": True, "links": unique_links}
     except Exception as e:
         return {"success": False, "error": str(e)}
-            
