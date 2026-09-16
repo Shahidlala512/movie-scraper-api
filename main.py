@@ -51,30 +51,53 @@ def search_moviesmint(scraper, query):
         pass
     return movies
 
-# --- Source 2: HDHub4u Scraper ---
+from urllib.parse import quote_plus
+
+# --- Source 2: HDHub4u Scraper (Updated & Smarter) ---
 def search_hdhub4u(scraper, query):
     base_url = "https://new5.hdhub4u.cl"
-    target_url = f"{base_url}/?s={query}"
+    # Query ko properly encode karna (jaise space ki jagah + lagana)
+    encoded_query = quote_plus(query)
+    target_url = f"{base_url}/?s={encoded_query}"
     movies = []
     try:
-        resp = scraper.get(target_url, timeout=5)
+        resp = scraper.get(target_url, timeout=6)
         if resp.status_code == 200:
             soup = BeautifulSoup(resp.text, 'html.parser')
-            articles = soup.find_all(['article', 'div'], class_=re.compile(r'post|item|box|entry'))
-            for item in articles[:10]:
+            
+            # HDHub4u ke search results ke liye wider container search
+            articles = soup.find_all(['article', 'div'], class_=re.compile(r'post|item|box|entry|search-item'))
+            
+            for item in articles:
                 link_tag = item.find('a', href=True)
                 img_tag = item.find('img')
+                
                 if link_tag and img_tag:
                     href = link_tag['href']
                     poster = img_tag.get('src') or img_tag.get('data-src') or img_tag.get('data-lazy-src')
                     title = img_tag.get('alt') or img_tag.get('title') or link_tag.get_text(strip=True)
-                    if href and poster and not any(x in href for x in ['/category/', '/tag/', '/page/']):
+                    
+                    if href and poster and title:
+                        # Category ya tag pages ko hataayein
+                        if any(x in href for x in ['/category/', '/tag/', '/page/']):
+                            continue
+                            
                         if not href.startswith('http'):
                             href = f"{base_url}{href}"
-                        movies.append({"title": title.strip(), "poster": poster, "pageUrl": href})
-    except Exception:
-        pass
+                            
+                        clean_title = title.strip()
+                        
+                        # Agar user ne specific search kiya hai, toh relevance check karein
+                        movies.append({
+                            "title": clean_title,
+                            "poster": poster,
+                            "pageUrl": href
+                        })
+    except Exception as e:
+        print("HDHub4u Error:", e)
+        
     return movies
+
 
 # --- Combined Search Route ---
 @app.get("/api/search")
