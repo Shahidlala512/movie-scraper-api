@@ -28,16 +28,18 @@ def get_scraper():
 def home():
     return {"status": "Multi-Source Movie Scraper API Ready"}
 
-# --- Source 1: MoviesMint Scraper ---
+# --- Source 1: MoviesMint Scraper (With Debugging) ---
 def search_moviesmint(scraper, query):
     encoded_query = quote_plus(query)
     target_url = f"https://moviesmint.app/?s={encoded_query}"
     movies = []
     try:
-        resp = scraper.get(target_url, timeout=6)
+        resp = scraper.get(target_url, timeout=8)
+        print(f"MoviesMint URL: {target_url} | Status: {resp.status_code}")
         if resp.status_code == 200:
             soup = BeautifulSoup(resp.text, 'html.parser')
             articles = soup.find_all(['article', 'div'], class_=re.compile(r'post|item|movie|entry'))
+            print(f"MoviesMint articles found: {len(articles)}")
             for item in articles[:15]:
                 link_tag = item.find('a', href=True)
                 img_tag = item.find('img')
@@ -53,17 +55,19 @@ def search_moviesmint(scraper, query):
         print("MoviesMint Error:", e)
     return movies
 
-# --- Source 2: HDHub4u Scraper ---
+# --- Source 2: HDHub4u Scraper (With Debugging) ---
 def search_hdhub4u(scraper, query):
     base_url = "https://new5.hdhub4u.cl"
     encoded_query = quote_plus(query)
     target_url = f"{base_url}/?s={encoded_query}"
     movies = []
     try:
-        resp = scraper.get(target_url, timeout=6)
+        resp = scraper.get(target_url, timeout=8)
+        print(f"HDHub4u URL: {target_url} | Status: {resp.status_code}")
         if resp.status_code == 200:
             soup = BeautifulSoup(resp.text, 'html.parser')
             articles = soup.find_all(['article', 'div'], class_=re.compile(r'post|item|box|entry'))
+            print(f"HDHub4u articles found: {len(articles)}")
             for item in articles[:15]:
                 link_tag = item.find('a', href=True)
                 img_tag = item.find('img')
@@ -85,14 +89,12 @@ def search_movies(query: str = "Hindi"):
     scraper = get_scraper()
     all_movies = []
     
-    # Dono sites se data fetch karein
     mint_results = search_moviesmint(scraper, query)
     all_movies.extend(mint_results)
     
     hdhub_results = search_hdhub4u(scraper, query)
     all_movies.extend(hdhub_results)
     
-    # Duplicate titles ko remove karein
     seen_titles = set()
     unique_movies = []
     for m in all_movies:
@@ -149,7 +151,6 @@ def resolve_final_url(scraper, url):
 @app.get("/api/links")
 def get_download_links(detailUrl: str):
     scraper = get_scraper()
-    
     try:
         resp = scraper.get(detailUrl)
         if resp.status_code != 200:
@@ -214,4 +215,3 @@ def get_download_links(detailUrl: str):
         return {"success": True, "links": unique_links}
     except Exception as e:
         return {"success": False, "error": str(e)}
-                               
