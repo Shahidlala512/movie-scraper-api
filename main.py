@@ -62,6 +62,46 @@ def search_movies(query: str = "Hindi"):
     except Exception as e:
         return {"success": False, "error": str(e)}
 
+def resolve_final_url(scraper, url):
+    current_url = url
+    for _ in range(3):
+        try:
+            resp = scraper.get(current_url, allow_redirects=True, timeout=6)
+            if resp.status_code != 200:
+                break
+            
+            # Agar HTTP redirect ke baad domain badal gaya (MoviesMint se bahar aa gaye)
+            if 'moviesmint.app' not in resp.url:
+                return resp.url
+            
+            # Agar abhi bhi moviesmint ke andar hai, toh HTML parse karke button ka link dhundho
+            soup = BeautifulSoup(resp.text, 'html.parser')
+            next_url = None
+            
+            for a in soup.find_all('a', href=True):
+                h = a['href'].strip()
+                if not h or h.startswith('#') or 'javascript:' in h:
+                    continue
+                    
+                if h.startswith('/'):
+                    full_h = f"https://moviesmint.app{h}"
+                else:
+                    full_h = h
+                    
+                # Agar koi external link mil gaya (GDFlix / FilePress / HubCloud etc.)
+                if 'moviesmint.app' not in full_h:
+                    return full_h
+                elif '/goto/' in full_h and full_h != current_url:
+                    next_url = full_h
+                    
+            if next_url:
+                current_url = next_url
+            else:
+                break
+        except Exception:
+            break
+    return current_url
+
 @app.get("/api/links")
 def get_download_links(detailUrl: str):
     scraper = get_scraper()
@@ -93,22 +133,14 @@ def get_download_links(detailUrl: str):
             valid_keywords = ['480p', '720p', '1080p', '4k', 'gdrive', 'batch', 'zip', 'dual audio']
             is_valid_download = any(k in text for k in valid_keywords) or any(k in href.lower() for k in ['/goto/', 'gdflix', 'filepress', 'drive'])
             
-            if not is_valid_download or len(text) < 3 or 'moviesmint.app' in href and '/goto/' not in href:
+            if not is_valid_download or len(text) < 3 or ('moviesmint.app' in href and '/goto/' not in href):
                 continue
                 
             if href.startswith('/'):
                 href = f"https://moviesmint.app{href}"
                 
-            resolved_url = href
-            if '/goto/' in href:
-                try:
-                    goto_resp = scraper.get(href, allow_redirects=True, timeout=5)
-                    if goto_resp.status_code == 200 and 'moviesmint.app' not in goto_resp.url:
-                        resolved_url = goto_resp.url
-                    else:
-                        resolved_url = href
-                except Exception:
-                    resolved_url = href
+            # Fully resolve the link through /goto/ intermediate pages
+            resolved_url = resolve_final_url(scraper, href)
             
             upper_text = tag.get_text(strip=True)
             label = upper_text if upper_text else "Download Link"
