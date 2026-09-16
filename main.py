@@ -28,59 +28,52 @@ def get_scraper():
 def home():
     return {"status": "Multi-Source Movie Scraper API Ready"}
 
-# --- Source 1: MoviesMint Scraper (With Debugging) ---
-def search_moviesmint(scraper, query):
-    encoded_query = quote_plus(query)
-    target_url = f"https://moviesmint.app/?s={encoded_query}"
-    movies = []
-    try:
-        resp = scraper.get(target_url, timeout=8)
-        print(f"MoviesMint URL: {target_url} | Status: {resp.status_code}")
-        if resp.status_code == 200:
-            soup = BeautifulSoup(resp.text, 'html.parser')
-            articles = soup.find_all(['article', 'div'], class_=re.compile(r'post|item|movie|entry'))
-            print(f"MoviesMint articles found: {len(articles)}")
-            for item in articles[:15]:
-                link_tag = item.find('a', href=True)
-                img_tag = item.find('img')
-                if link_tag and img_tag:
-                    href = link_tag['href']
-                    poster = img_tag.get('src') or img_tag.get('data-src') or img_tag.get('data-lazy-src')
-                    title = img_tag.get('alt') or img_tag.get('title') or link_tag.get_text(strip=True)
-                    if href and poster and not any(x in href for x in ['/category/', '/tag/', '/page/']):
-                        if href.startswith('/'):
-                            href = f"https://moviesmint.app{href}"
-                        movies.append({"title": title.strip(), "poster": poster, "pageUrl": href})
-    except Exception as e:
-        print("MoviesMint Error:", e)
-    return movies
-
-# --- Source 2: HDHub4u Scraper (With Debugging) ---
-def search_hdhub4u(scraper, query):
-    base_url = "https://new5.hdhub4u.cl"
+# --- Universal Scraper Logic (Works for all WP Movie Sites) ---
+def scrape_site(scraper, base_url, query):
     encoded_query = quote_plus(query)
     target_url = f"{base_url}/?s={encoded_query}"
     movies = []
     try:
         resp = scraper.get(target_url, timeout=8)
-        print(f"HDHub4u URL: {target_url} | Status: {resp.status_code}")
+        print(f"Scraping URL: {target_url} | Status: {resp.status_code}")
         if resp.status_code == 200:
             soup = BeautifulSoup(resp.text, 'html.parser')
-            articles = soup.find_all(['article', 'div'], class_=re.compile(r'post|item|box|entry'))
-            print(f"HDHub4u articles found: {len(articles)}")
-            for item in articles[:15]:
-                link_tag = item.find('a', href=True)
-                img_tag = item.find('img')
-                if link_tag and img_tag:
-                    href = link_tag['href']
+            
+            # Universal approach: Find all anchor tags containing an image
+            for a_tag in soup.find_all('a', href=True):
+                img_tag = a_tag.find('img')
+                if img_tag:
+                    href = a_tag['href']
+                    
+                    # Ignore unwanted links
+                    if any(x in href for x in ['/category/', '/tag/', '/page/', 'wp-login', 'whatsapp', 'telegram', 'facebook', 'instagram']):
+                        continue
+                        
                     poster = img_tag.get('src') or img_tag.get('data-src') or img_tag.get('data-lazy-src')
-                    title = img_tag.get('alt') or img_tag.get('title') or link_tag.get_text(strip=True)
-                    if href and poster and not any(x in href for x in ['/category/', '/tag/', '/page/']):
+                    if not poster or poster.startswith('data:'):
+                        poster = img_tag.get('data-src') or img_tag.get('data-lazy-src')
+                        
+                    title = img_tag.get('alt') or img_tag.get('title') or a_tag.get_text(strip=True)
+                    
+                    if not title or len(title) < 2:
+                        parent = a_tag.find_parent(['article', 'div'])
+                        if parent:
+                            title_elem = parent.find(['h2', 'h3', 'h4', 'span'], class_=re.compile(r'title|name|heading|entry'))
+                            if title_elem:
+                                title = title_elem.get_text(strip=True)
+                                
+                    if href and poster and title:
                         if not href.startswith('http'):
                             href = f"{base_url}{href}"
-                        movies.append({"title": title.strip(), "poster": poster, "pageUrl": href})
+                            
+                        movies.append({
+                            "title": title.strip(),
+                            "poster": poster,
+                            "pageUrl": href
+                        })
     except Exception as e:
-        print("HDHub4u Error:", e)
+        print(f"Error scraping {base_url}:", e)
+        
     return movies
 
 # --- Combined Search Route ---
@@ -89,17 +82,20 @@ def search_movies(query: str = "Hindi"):
     scraper = get_scraper()
     all_movies = []
     
-    mint_results = search_moviesmint(scraper, query)
+    # Source 1: MoviesMint
+    mint_results = scrape_site(scraper, "https://moviesmint.app", query)
     all_movies.extend(mint_results)
     
-    hdhub_results = search_hdhub4u(scraper, query)
+    # Source 2: HDHub4u
+    hdhub_results = scrape_site(scraper, "https://new5.hdhub4u.cl", query)
     all_movies.extend(hdhub_results)
     
+    # Remove duplicates based on title and clean URL
     seen_titles = set()
     unique_movies = []
     for m in all_movies:
-        clean_title = m['title'].lower().strip()
-        if clean_title not in seen_titles:
+        clean_title = re.sub(r'[^a-zA-Z0-9]', '', m['title'].lower())
+        if clean_title not in seen_titles and len(clean_title) > 2:
             seen_titles.add(clean_title)
             unique_movies.append(m)
             
@@ -215,3 +211,4 @@ def get_download_links(detailUrl: str):
         return {"success": True, "links": unique_links}
     except Exception as e:
         return {"success": False, "error": str(e)}
+            
