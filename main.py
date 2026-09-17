@@ -26,7 +26,7 @@ def get_scraper():
 
 @app.get("/")
 def home():
-    return {"status": "Multi-Source Movie Scraper API Ready"}
+    return {"status": "Multi-Source Movie Detail API Ready"}
 
 def scrape_site(scraper, base_url, query):
     encoded_query = quote_plus(query)
@@ -106,116 +106,179 @@ def search_movies(query: str = "Hindi"):
         "data": unique_movies
     }
 
-# --- Safe Link Resolver (Never drops valid links) ---
 def resolve_final_url(scraper, start_url):
     current_url = start_url
     for _ in range(3):
         try:
             resp = scraper.get(current_url, allow_redirects=True, timeout=5)
             final_resp_url = resp.url
-            
             if 'moviesmint.app' not in final_resp_url and 'hdhub4u' not in final_resp_url:
                 return final_resp_url
-                
             if resp.status_code != 200:
                 break
-                
             soup = BeautifulSoup(resp.text, 'html.parser')
             next_target = None
-            
             for a in soup.find_all('a', href=True):
                 h = a['href'].strip()
                 if not h or h.startswith('#') or 'javascript:' in h:
                     continue
-                    
                 if h.startswith('/'):
                     domain = "https://moviesmint.app" if 'moviesmint' in current_url else "https://new5.hdhub4u.cl"
                     h = f"{domain}{h}"
-                    
                 if 'moviesmint.app' not in h and 'hdhub4u' not in h:
                     return h
                 elif '/goto/' in h and h != current_url:
                     next_target = h
-                    
             if next_target:
                 current_url = next_target
             else:
                 break
         except Exception:
             break
-            
     return current_url
 
-@app.get("/api/links")
-def get_download_links(detailUrl: str):
+# --- Advanced Detail Page Scraper (Metadata + Screenshots + Packs + Episodes) ---
+@app.get("/api/movie-detail")
+def get_movie_detail(detailUrl: str):
     scraper = get_scraper()
     try:
-        resp = scraper.get(detailUrl, timeout=8)
+        resp = scraper.get(detailUrl, timeout=9)
         if resp.status_code != 200:
-            return {"success": False, "error": "Could not fetch details"}
+            return {"success": False, "error": "Could not fetch movie page"}
             
         soup = BeautifulSoup(resp.text, 'html.parser')
         
-        for junk in soup.find_all(['header', 'footer', 'aside', 'nav', 'form', 'comment']):
-            junk.decompose()
-            
-        for junk_div in soup.find_all('div', class_=re.compile(r'sidebar|related|recommended|widgets|popular|social|share|comments|recent')):
-            junk_div.decompose()
-            
-        final_links = []
+        # 1. Title & Poster
+        title_elem = soup.find(['h1', 'h2'], class_=re.compile(r'title|entry-title'))
+        title = title_elem.get_text(strip=True) if title_elem else "Unknown Title"
+        
         content_area = soup.find(['div', 'article'], class_=re.compile(r'post-content|entry-content|content|su-spoiler|post_content'))
         search_scope = content_area if content_area else soup
         
-        all_a_tags = search_scope.find_all('a', href=True)
+        poster_img = search_scope.find('img')
+        poster = poster_img.get('src') or poster_img.get('data-src') if poster_img else ""
+        if poster and poster.startswith('/'):
+            domain = "https://moviesmint.app" if 'moviesmint' in detailUrl else "https://new5.hdhub4u.cl"
+            poster = f"{domain}{poster}"
+
+        # 2. Metadata Extraction (Director, Genre, Release Date, Cast, IMDb, Audio)
+        full_text = search_scope.get_text()
         
-        for tag in all_a_tags:
-            href = tag['href'].strip()
-            text = tag.get_text(strip=True)
+        def extract_meta(pattern, text):
+            match = re.search(pattern, text, re.IGNORECASE)
+            return match.group(1).strip() if match else "N/A"
+
+        imdb = extract_meta(r'IMDb Rating:\s*([^\n]+)', full_text)
+        if imdb == "N/A":
+            imdb = extract_meta(r'Rating:\s*([0-9\.]+/?10)', full_text)
+            
+        audio = extract_meta(r'Audio Languages?:\s*([^\n]+)', full_text)
+        director = extract_meta(r'Director:\s*([^\n]+)', full_text)
+        genre = extract_meta(r'Genre:\s*([^\n]+)', full_text)
+        release_date = extract_meta(r'Release Date:\s*([^\n]+)', full_text)
+        cast = extract_meta(r'Cast:\s*([^\n]+)', full_text)
+        
+        # Description / Synopsis
+        p_tags = search_scope.find_all('p')
+        synopsis = ""
+        for p in p_tags:
+            txt = p.get_text(strip=True)
+            if len(txt) > 80 and not any(k in txt.lower() for k in ['download', 'click', 'telegram', 'quality']):
+                synopsis = txt
+                break
+
+        # 3. Screenshots Gallery
+        screenshots = []
+        for img in search_scope.find_all('img'):
+            img_src = img.get('src') or img.get('data-src') or img.get('data-lazy-src')
+            if img_src and img_src != poster and not any(bad in img_src.lower() for bad in ['logo', 'icon', 'emoji', 'button', 'banner']):
+                if not img_src.startswith('http'):
+                    domain = "https://moviesmint.app" if 'moviesmint' in detailUrl else "https://new5.hdhub4u.cl"
+                    img_src = f"{domain}{img_src}"
+                if img_src not in screenshots:
+                    screenshots.append(img_src)
+        # Limit screenshots to prevent clutter
+        screenshots = screenshots[:6]
+
+        # 4. Links Categorization (Qualities, Packs, Episodes)
+        qualities = [] # For movies: 480p, 720p, 1080p with sizes
+        packs = []     # For series batches / packs
+        episodes = []  # For web series individual episodes
+
+        for a in search_scope.find_all('a', href=True):
+            href = a['href'].strip()
+            text = a.get_text(strip=True)
             text_lower = text.lower()
             
-            if any(bad in text_lower for bad in ['telegram', 'whatsapp', 'subscribe', 'join', 'home', 'request', 'dmca']):
+            if any(bad in text_lower for bad in ['telegram', 'whatsapp', 'subscribe', 'join', 'home', 'request', 'dmca', 'trailer']):
                 continue
                 
-            qualities = []
-            if '480p' in text_lower or '480p' in href.lower():
-                qualities.append('480p')
-            if '720p' in text_lower or '720p' in href.lower():
-                qualities.append('720p')
-            if '1080p' in text_lower or '1080p' in href.lower():
-                qualities.append('1080p')
-            if '4k' in text_lower or '2160p' in text_lower or '4k' in href.lower():
-                qualities.append('4K')
-            if 'batch' in text_lower or 'zip' in text_lower or 'pack' in text_lower:
-                qualities.append('Batch/Zip')
-                
-            is_download_link = any(k in href.lower() for k in ['/goto/', 'gdflix', 'filepress', 'drive', 'hubcloud', 'pixeldrain', 'vflix', '10file', 'download', 'link'])
-            if not qualities and not is_download_link:
+            if not href or href.startswith('#') or 'javascript:' in href:
                 continue
                 
             if href.startswith('/'):
                 domain = "https://moviesmint.app" if 'moviesmint' in detailUrl else "https://new5.hdhub4u.cl"
                 href = f"{domain}{href}"
-                
+
+            # Check for file size inside text or parent text (e.g., "260MB", "1.2GB")
+            parent_text = a.parent.get_text() if a.parent else text
+            size_match = re.search(r'([0-9\.]+\s*(?:MB|GB))', parent_text, re.IGNORECASE)
+            size_str = size_match.group(1) if size_match else ""
+
             resolved_url = resolve_final_url(scraper, href)
-            
-            quality_str = " / ".join(qualities) if qualities else "Fast Link"
-            label = f"⚡ Download [{quality_str}]"
-            if text and len(text) < 40 and not text_lower.startswith('download links') and not text_lower.startswith('dual audio'):
-                label = f"⚡ {text}"
-                
-            final_links.append({
-                "name": label,
+            if not resolved_url:
+                continue
+
+            link_item = {
+                "name": text if len(text) < 45 else "Download Link",
+                "size": size_str,
                 "url": resolved_url
-            })
+            }
+
+            # Categorize
+            if 'episode' in text_lower or 'ep ' in text_lower or re.search(r'\bep\s*\d+\b', text_lower):
+                episodes.append(link_item)
+            elif 'pack' in text_lower or 'batch' in text_lower or 'zip' in text_lower or '10bit' in text_lower or 'season' in text_lower:
+                packs.append(link_item)
+            elif '480p' in text_lower or '720p' in text_lower or '1080p' in text_lower or '4k' in text_lower:
+                # Determine specific quality label
+                q_label = "480p"
+                if '1080p' in text_lower: q_label = "1080p"
+                elif '720p' in text_lower: q_label = "720p"
+                elif '4k' in text_lower or '2160p' in text_lower: q_label = "4K"
                 
-        seen_urls = set()
-        unique_links = []
-        for l in final_links:
-            if l['url'] not in seen_urls:
-                seen_urls.add(l['url'])
-                unique_links.append(l)
-                
-        return {"success": True, "links": unique_links}
+                qualities.append({
+                    "quality": q_label,
+                    "size": size_str,
+                    "name": text,
+                    "url": resolved_url
+                })
+            else:
+                if len(qualities) < 4:
+                    qualities.append({
+                        "quality": "Fast Link",
+                        "size": size_str,
+                        "name": text if text else "Download",
+                        "url": resolved_url
+                    })
+
+        return {
+            "success": True,
+            "title": title,
+            "poster": poster,
+            "synopsis": synopsis,
+            "imdb": imdb,
+            "audio": audio,
+            "director": director,
+            "genre": genre,
+            "releaseDate": release_date,
+            "cast": cast,
+            "screenshots": screenshots,
+            "qualities": qualities,
+            "packs": packs,
+            "episodes": episodes
+        }
+
     except Exception as e:
         return {"success": False, "error": str(e)}
-        
+                
