@@ -106,21 +106,15 @@ def search_movies(query: str = "Hindi"):
         "data": unique_movies
     }
 
-# --- Bulletproof Link Resolver (Strips out internal site loops) ---
+# --- Safe Link Resolver (Never drops valid links) ---
 def resolve_final_url(scraper, start_url):
     current_url = start_url
-    valid_hosts = ['hubcloud', 'gdflix', 'filepress', 'drive.google', 'pixeldrain', '10file', 'katfile', 'vflix', 'embedgram', 'mdisk']
-    
-    for _ in range(4):
+    for _ in range(3):
         try:
-            # Agar URL me pehle se hi direct file host hai, toh wahi return kar do
-            if any(host in current_url.lower() for host in valid_hosts):
-                return current_url
-                
-            resp = scraper.get(current_url, allow_redirects=True, timeout=6)
+            resp = scraper.get(current_url, allow_redirects=True, timeout=5)
             final_resp_url = resp.url
             
-            if any(host in final_resp_url.lower() for host in valid_hosts):
+            if 'moviesmint.app' not in final_resp_url and 'hdhub4u' not in final_resp_url:
                 return final_resp_url
                 
             if resp.status_code != 200:
@@ -129,7 +123,6 @@ def resolve_final_url(scraper, start_url):
             soup = BeautifulSoup(resp.text, 'html.parser')
             next_target = None
             
-            # Look for /goto/ links or direct download buttons inside the page
             for a in soup.find_all('a', href=True):
                 h = a['href'].strip()
                 if not h or h.startswith('#') or 'javascript:' in h:
@@ -139,7 +132,7 @@ def resolve_final_url(scraper, start_url):
                     domain = "https://moviesmint.app" if 'moviesmint' in current_url else "https://new5.hdhub4u.cl"
                     h = f"{domain}{h}"
                     
-                if any(host in h.lower() for host in valid_hosts):
+                if 'moviesmint.app' not in h and 'hdhub4u' not in h:
                     return h
                 elif '/goto/' in h and h != current_url:
                     next_target = h
@@ -151,10 +144,6 @@ def resolve_final_url(scraper, start_url):
         except Exception:
             break
             
-    # Agar link abhi bhi source website ke andar hi ghum raha hai aur bahar nahi gaya, toh None return karo taki wo list se hat jaye
-    if 'moviesmint.app' in current_url or 'hdhub4u' in current_url:
-        return None
-        
     return current_url
 
 @app.get("/api/links")
@@ -184,7 +173,7 @@ def get_download_links(detailUrl: str):
             text = tag.get_text(strip=True)
             text_lower = text.lower()
             
-            if any(bad in text_lower for bad in ['telegram', 'whatsapp', 'subscribe', 'join', 'home', 'request']):
+            if any(bad in text_lower for bad in ['telegram', 'whatsapp', 'subscribe', 'join', 'home', 'request', 'dmca']):
                 continue
                 
             qualities = []
@@ -199,7 +188,8 @@ def get_download_links(detailUrl: str):
             if 'batch' in text_lower or 'zip' in text_lower or 'pack' in text_lower:
                 qualities.append('Batch/Zip')
                 
-            if not qualities and not any(k in href.lower() for k in ['/goto/', 'gdflix', 'filepress', 'drive', 'hubcloud']):
+            is_download_link = any(k in href.lower() for k in ['/goto/', 'gdflix', 'filepress', 'drive', 'hubcloud', 'pixeldrain', 'vflix', '10file', 'download', 'link'])
+            if not qualities and not is_download_link:
                 continue
                 
             if href.startswith('/'):
@@ -208,10 +198,6 @@ def get_download_links(detailUrl: str):
                 
             resolved_url = resolve_final_url(scraper, href)
             
-            # Agar link resolve hokar wapas moviesmint/hdhub4u par hi atak gaya, toh use add hi mat karo!
-            if not resolved_url:
-                continue
-                
             quality_str = " / ".join(qualities) if qualities else "Fast Link"
             label = f"⚡ Download [{quality_str}]"
             if text and len(text) < 40 and not text_lower.startswith('download links') and not text_lower.startswith('dual audio'):
