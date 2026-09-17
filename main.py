@@ -28,7 +28,6 @@ def get_scraper():
 def home():
     return {"status": "Multi-Source Movie Scraper API Ready"}
 
-# --- Clean Scraper Logic ---
 def scrape_site(scraper, base_url, query):
     encoded_query = quote_plus(query)
     target_url = f"{base_url}/?s={encoded_query}"
@@ -82,7 +81,6 @@ def scrape_site(scraper, base_url, query):
         
     return movies
 
-# --- Combined Search Route ---
 @app.get("/api/search")
 def search_movies(query: str = "Hindi"):
     scraper = get_scraper()
@@ -108,46 +106,57 @@ def search_movies(query: str = "Hindi"):
         "data": unique_movies
     }
 
-# --- Resolve Final Links ---
-def resolve_final_url(scraper, url):
-    current_url = url
-    for _ in range(3):
+# --- Bulletproof Link Resolver (Strips out internal site loops) ---
+def resolve_final_url(scraper, start_url):
+    current_url = start_url
+    valid_hosts = ['hubcloud', 'gdflix', 'filepress', 'drive.google', 'pixeldrain', '10file', 'katfile', 'vflix', 'embedgram', 'mdisk']
+    
+    for _ in range(4):
         try:
+            # Agar URL me pehle se hi direct file host hai, toh wahi return kar do
+            if any(host in current_url.lower() for host in valid_hosts):
+                return current_url
+                
             resp = scraper.get(current_url, allow_redirects=True, timeout=6)
+            final_resp_url = resp.url
+            
+            if any(host in final_resp_url.lower() for host in valid_hosts):
+                return final_resp_url
+                
             if resp.status_code != 200:
                 break
-            
-            if 'moviesmint.app' not in resp.url and 'hdhub4u' not in resp.url:
-                return resp.url
-            
+                
             soup = BeautifulSoup(resp.text, 'html.parser')
-            next_url = None
+            next_target = None
             
+            # Look for /goto/ links or direct download buttons inside the page
             for a in soup.find_all('a', href=True):
                 h = a['href'].strip()
                 if not h or h.startswith('#') or 'javascript:' in h:
                     continue
                     
                 if h.startswith('/'):
-                    parsed_domain = "https://moviesmint.app" if 'moviesmint' in current_url else "https://new5.hdhub4u.cl"
-                    full_h = f"{parsed_domain}{h}"
-                else:
-                    full_h = h
+                    domain = "https://moviesmint.app" if 'moviesmint' in current_url else "https://new5.hdhub4u.cl"
+                    h = f"{domain}{h}"
                     
-                if 'moviesmint.app' not in full_h and 'hdhub4u' not in full_h:
-                    return full_h
-                elif '/goto/' in full_h and full_h != current_url:
-                    next_url = full_h
+                if any(host in h.lower() for host in valid_hosts):
+                    return h
+                elif '/goto/' in h and h != current_url:
+                    next_target = h
                     
-            if next_url:
-                current_url = next_url
+            if next_target:
+                current_url = next_target
             else:
                 break
         except Exception:
             break
+            
+    # Agar link abhi bhi source website ke andar hi ghum raha hai aur bahar nahi gaya, toh None return karo taki wo list se hat jaye
+    if 'moviesmint.app' in current_url or 'hdhub4u' in current_url:
+        return None
+        
     return current_url
 
-# --- Ultra-Clean Download Links Route (Filters out generic/useless buttons) ---
 @app.get("/api/links")
 def get_download_links(detailUrl: str):
     scraper = get_scraper()
@@ -175,11 +184,9 @@ def get_download_links(detailUrl: str):
             text = tag.get_text(strip=True)
             text_lower = text.lower()
             
-            # Skip social/unwanted links
             if any(bad in text_lower for bad in ['telegram', 'whatsapp', 'subscribe', 'join', 'home', 'request']):
                 continue
                 
-            # Extract specific qualities
             qualities = []
             if '480p' in text_lower or '480p' in href.lower():
                 qualities.append('480p')
@@ -192,8 +199,7 @@ def get_download_links(detailUrl: str):
             if 'batch' in text_lower or 'zip' in text_lower or 'pack' in text_lower:
                 qualities.append('Batch/Zip')
                 
-            # Ignore generic buttons that don't specify quality or proper redirect servers
-            if not qualities and not any(k in href.lower() for k in ['/goto/', 'gdflix', 'filepress', 'hubcloud', 'drive']):
+            if not qualities and not any(k in href.lower() for k in ['/goto/', 'gdflix', 'filepress', 'drive', 'hubcloud']):
                 continue
                 
             if href.startswith('/'):
@@ -202,6 +208,10 @@ def get_download_links(detailUrl: str):
                 
             resolved_url = resolve_final_url(scraper, href)
             
+            # Agar link resolve hokar wapas moviesmint/hdhub4u par hi atak gaya, toh use add hi mat karo!
+            if not resolved_url:
+                continue
+                
             quality_str = " / ".join(qualities) if qualities else "Fast Link"
             label = f"⚡ Download [{quality_str}]"
             if text and len(text) < 40 and not text_lower.startswith('download links') and not text_lower.startswith('dual audio'):
