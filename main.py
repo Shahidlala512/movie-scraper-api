@@ -137,6 +137,10 @@ def resolve_final_url(scraper, start_url):
             break
     return current_url
 
+@app.get("/api/links")
+def get_links_alias(detailUrl: str):
+    return get_movie_detail(detailUrl)
+
 # --- Advanced Detail Page Scraper (Metadata + Screenshots + Packs + Episodes) ---
 @app.get("/api/movie-detail")
 def get_movie_detail(detailUrl: str):
